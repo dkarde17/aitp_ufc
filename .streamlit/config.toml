@@ -1,0 +1,3 @@
+[server]
+# Bound RAM on the free tier — nobody needs to upload a 200 MB video for one frame.
+maxUploadSize = 100
