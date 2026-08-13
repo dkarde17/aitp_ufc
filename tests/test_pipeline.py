@@ -113,6 +113,96 @@ def test_face_center_hint_no_face_returns_none(person_photo):
 
 
 # ---------------------------------------------------------------------------
+# Reference composition matching
+# ---------------------------------------------------------------------------
+
+def _tilted_subject(angle_deg: float, fill: float = 0.5) -> Image.Image:
+    """RGBA with an opaque rectangle rotated by a known angle."""
+    side = 400
+    w, h = int(side * fill), int(side * fill * 1.6)
+    block = Image.new("RGBA", (w, h), (255, 0, 0, 255))
+    block = block.rotate(-angle_deg, resample=Image.BICUBIC, expand=True)
+    canvas = Image.new("RGBA", (side, side), (0, 0, 0, 0))
+    canvas.alpha_composite(block, ((side - block.width) // 2,
+                                   (side - block.height) // 2))
+    return canvas
+
+
+@pytest.mark.parametrize("angle", [0.0, 12.0, -18.0])
+def test_reference_composition_recovers_tilt(angle):
+    result = sp.reference_composition(_tilted_subject(angle))
+    assert result is not None
+    rotation, zoom, dx, dy = result
+    assert rotation == pytest.approx(angle, abs=4.0)
+    assert 0.80 <= zoom <= 0.95 / 0.92
+
+
+def test_reference_composition_none_for_empty():
+    empty = Image.new("RGBA", (200, 200), (0, 0, 0, 0))
+    assert sp.reference_composition(empty) is None
+
+
+def test_reference_composition_none_for_full_frame():
+    full = Image.new("RGBA", (200, 200), (10, 10, 10, 255))
+    assert sp.reference_composition(full) is None
+
+
+def test_reference_composition_clamps_are_respected():
+    # A 40-degree tilt folds into minAreaRect's ambiguity; whatever comes out
+    # must still respect the guard rails the UI depends on.
+    result = sp.reference_composition(_tilted_subject(40.0, fill=0.95))
+    assert result is not None
+    rotation, zoom, dx, dy = result
+    assert abs(rotation) <= 25.0
+    # Never suggests a crop: 0.95/0.92 zoom == subject at 95% of the canvas.
+    assert 0.80 <= zoom <= 0.95 / 0.92
+    assert abs(dx) <= 0.4 and abs(dy) <= 0.4
+
+
+def test_reference_composition_reads_scale():
+    """A subject filling more of its frame should suggest a larger zoom."""
+    small = sp.reference_composition(_tilted_subject(0.0, fill=0.3))
+    large = sp.reference_composition(_tilted_subject(0.0, fill=0.9))
+    assert small is not None and large is not None
+    assert large[1] > small[1]
+
+
+# ---------------------------------------------------------------------------
+# Stylization
+# ---------------------------------------------------------------------------
+
+def test_stylize_zero_is_noop(cutout):
+    assert sp.stylize(cutout, 0) is cutout
+
+
+def test_stylize_changes_pixels_and_keeps_alpha(cutout):
+    out = sp.stylize(cutout, 100, warmth=(240, 200, 160))
+    assert out.size == cutout.size
+    assert out.mode == "RGBA"
+    # Alpha must be untouched — styling may never eat the cutout mask.
+    assert np.array_equal(np.asarray(out.split()[-1]),
+                          np.asarray(cutout.split()[-1]))
+    rgb_before = np.asarray(cutout.convert("RGB")).astype(int)
+    rgb_after = np.asarray(out.convert("RGB")).astype(int)
+    assert np.abs(rgb_after - rgb_before).sum() > 0
+
+
+def test_stylize_strength_is_monotonic(cutout):
+    base = np.asarray(cutout.convert("RGB")).astype(int)
+    mild = np.abs(np.asarray(sp.stylize(cutout, 20).convert("RGB")).astype(int)
+                  - base).sum()
+    full = np.abs(np.asarray(sp.stylize(cutout, 100).convert("RGB")).astype(int)
+                  - base).sum()
+    assert full > mild
+
+
+def test_stylize_handles_rgb_input(person_photo):
+    out = sp.stylize(person_photo, 50)
+    assert out.mode == "RGB"
+    assert out.size == person_photo.size
+
+
+# ---------------------------------------------------------------------------
 # Composition / caption / export
 # ---------------------------------------------------------------------------
 

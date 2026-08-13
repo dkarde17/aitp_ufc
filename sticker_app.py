@@ -46,6 +46,14 @@ def cutout_cached(source_png: bytes, refine_edges: bool) -> bytes:
     return buf.getvalue()
 
 
+@st.cache_data(show_spinner="Reading the reference's framing…", max_entries=4)
+def reference_composition_cached(ref_png: bytes):
+    """Cut out the *reference's* subject to learn its tilt/scale/position."""
+    img = Image.open(io.BytesIO(ref_png)).convert("RGB")
+    rgba = sp.remove_background(img, get_rembg_session())
+    return sp.reference_composition(rgba)
+
+
 def to_png_bytes(img: Image.Image) -> bytes:
     buf = io.BytesIO()
     img.save(buf, "PNG")
@@ -68,6 +76,7 @@ STYLE_DEFAULTS = {
     "auto_enhance": False,
     "rotation_deg": 0.0,
     "refine_edges": False,
+    "stickerness": 35,
     "border_px": 12,
     "bg_mode": "Transparent",
     "bg_color": "#FFFFFF",
@@ -230,9 +239,29 @@ if ss.source_bytes is None:
 
 st.header("3 · Style your sticker")
 
+def apply_reference_composition() -> None:
+    """Pose the sticker like the reference — pre-sets sliders, never forces."""
+    suggestion = reference_composition_cached(to_png_bytes(ref_img))
+    if suggestion is None:
+        ss.compose_msg = ("Couldn't read a clear subject in that reference — "
+                          "sliders left as they were.")
+        return
+    ss.rotation_deg, ss.zoom, ss.dx, ss.dy = suggestion
+    ss.compose_msg = "ok"
+
+
+st.button("🎯 Match reference composition", on_click=apply_reference_composition,
+          width="stretch",
+          help="Tilts, scales and positions you like the reference. "
+               "The sliders below move — nudge anything that looks off.")
+if ss.get("compose_msg") == "ok":
+    st.caption("Matched the reference's framing — tweak the sliders below to taste.")
+elif ss.get("compose_msg"):
+    st.warning(ss.compose_msg)
+
 with st.expander("🛠️ Photo fixes", expanded=False):
     st.checkbox("Auto-enhance (fix dim / flat lighting)", key="auto_enhance")
-    st.slider("Straighten / tilt (°)", -15.0, 15.0, step=0.5, key="rotation_deg")
+    st.slider("Straighten / tilt (°)", -25.0, 25.0, step=0.5, key="rotation_deg")
     st.checkbox("Refine edges (slower, cleaner hair)", key="refine_edges")
 
 source_img = Image.open(io.BytesIO(ss.source_bytes)).convert("RGB")
@@ -243,6 +272,10 @@ if abs(ss.rotation_deg) >= 0.05:
 
 cutout_png = cutout_cached(to_png_bytes(source_img), ss.refine_edges)
 cutout = Image.open(io.BytesIO(cutout_png)).convert("RGBA")
+
+st.slider("✨ Sticker-ness", 0, 100, key="stickerness",
+          help="Smooths, warms and flattens your photo toward illustration so "
+               "it reads as a sticker instead of a snapshot. 0 = untouched.")
 
 c1, c2 = st.columns(2)
 with c1:
@@ -270,7 +303,8 @@ else:
     h = ss.bg_color.lstrip("#")
     bg = tuple(int(h[i:i + 2], 16) for i in (0, 2, 4))
 
-styled = sp.add_border(cutout, ss.border_px)
+subject = sp.stylize(cutout, ss.stickerness, warmth=sp.dominant_color(ref_img))
+styled = sp.add_border(subject, ss.border_px)
 sticker = sp.compose_canvas(styled, zoom=ss.zoom, dx=ss.dx, dy=ss.dy, bg=bg)
 sticker = sp.draw_caption(
     sticker, ss.caption_text, position=ss.caption_pos.lower(),

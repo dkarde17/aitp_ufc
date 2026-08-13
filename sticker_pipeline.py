@@ -253,6 +253,96 @@ def face_center_hint(img: Image.Image) -> tuple[float, float, float] | None:
     return (1.0, float(np.clip(dx, -0.3, 0.3)), float(np.clip(dy, -0.3, 0.3)))
 
 
+def reference_composition(ref_rgba: Image.Image) -> tuple[float, float, float, float] | None:
+    """Read the reference's framing off its own cutout mask.
+
+    Returns (rotation_deg, zoom, dx, dy) shaped for the app's sliders, so the
+    user's sticker can be posed the same way as the reference. Returns None
+    when the reference has no usable subject (empty or full-frame mask).
+    """
+    alpha = np.asarray(ref_rgba.split()[-1])
+    mask = (alpha > 8).astype(np.uint8)
+    total = mask.size
+    covered = int(mask.sum())
+    # No subject, or the cutout kept everything (nothing to learn from).
+    if covered < total * 0.01 or covered > total * 0.995:
+        return None
+
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if not contours:
+        return None
+    biggest = max(contours, key=cv2.contourArea)
+
+    # Tilt: minAreaRect's angle is ambiguous mod 90 — fold it into [-45, 45]
+    # and keep only plausible sticker tilts.
+    (_cx, _cy), (rw, rh), angle = cv2.minAreaRect(biggest)
+    if rw < rh:
+        angle += 90.0
+    angle = (angle + 45.0) % 90.0 - 45.0
+    rotation = float(np.clip(angle, -25.0, 25.0))
+
+    # Scale: how much of its frame the reference subject fills, expressed as a
+    # zoom relative to compose_canvas' default 92% fit.
+    # Floor keeps a small-subject reference from suggesting a uselessly tiny
+    # sticker; ceiling keeps the subject inside 95% of the canvas so a
+    # frame-filling reference never crops the user's head off.
+    x, y, w, h = cv2.boundingRect(biggest)
+    fill = max(w / ref_rgba.width, h / ref_rgba.height)
+    zoom = float(np.clip(fill / 0.92, 0.80, 0.95 / 0.92))
+
+    # Offset: where the subject sits inside its frame.
+    dx = float(np.clip(0.5 - (x + w / 2) / ref_rgba.width, -0.4, 0.4))
+    dy = float(np.clip(0.5 - (y + h / 2) / ref_rgba.height, -0.4, 0.4))
+    return rotation, zoom, dx, dy
+
+
+def stylize(img: Image.Image, strength: int,
+            warmth: tuple[int, int, int] | None = None) -> Image.Image:
+    """Push a photo toward illustration so it reads as a sticker, not a snapshot.
+
+    strength: 0 = untouched, 100 = full effect. Blended with the original so
+    the result never goes fully waxy. `warmth` (an RGB color sampled from the
+    reference) pulls the palette toward the reference's mood.
+
+    Preserves size, mode and the alpha channel exactly — styling must never
+    eat the cutout mask.
+    """
+    if strength <= 0:
+        return img
+    amount = min(max(strength, 0), 100) / 100.0
+    has_alpha = img.mode == "RGBA"
+    alpha_channel = img.split()[-1] if has_alpha else None
+    rgb = np.asarray(img.convert("RGB"))
+
+    # 1. Edge-preserving smoothing: cleans skin without destroying features.
+    styled = cv2.edgePreservingFilter(rgb, flags=cv2.RECURS_FILTER,
+                                      sigma_s=60, sigma_r=0.35)
+    # 2. Mild posterize toward flat illustration tones (capped so faces
+    #    don't band into blotches).
+    levels = 10
+    styled = (styled // (256 // levels) * (256 // levels) + (256 // levels) // 2)
+    styled = np.clip(styled, 0, 255).astype(np.uint8)
+    # 3. Saturation + contrast lift — the "sticker pop".
+    hsv = cv2.cvtColor(styled, cv2.COLOR_RGB2HSV).astype(np.float32)
+    hsv[..., 1] *= 1.35
+    hsv = np.clip(hsv, 0, 255).astype(np.uint8)
+    styled = cv2.cvtColor(hsv, cv2.COLOR_HSV2RGB)
+    styled = np.clip((styled.astype(np.float32) - 128) * 1.12 + 128, 0, 255)
+    # 4. Nudge the palette toward the reference's mood.
+    if warmth is not None:
+        target = np.array(warmth, dtype=np.float32)
+        styled = styled * 0.88 + (styled * (target / max(target.mean(), 1.0))) * 0.12
+        styled = np.clip(styled, 0, 255)
+
+    blended = (rgb.astype(np.float32) * (1 - amount)
+               + styled.astype(np.float32) * amount)
+    out = Image.fromarray(np.clip(blended, 0, 255).astype(np.uint8))
+    if has_alpha:
+        out = out.convert("RGBA")
+        out.putalpha(alpha_channel)
+    return out
+
+
 # ---------------------------------------------------------------------------
 # Styling / composition
 # ---------------------------------------------------------------------------

@@ -15,6 +15,8 @@ auto-generated from a stored avatar.
 1. **Pick a reference sticker** — any template/meme/sticker whose style, pose, or vibe you want.
 2. **The app asks for a photo or video of you** matching it — upload, browser camera, or scrub a video to the exact frame (with a "sharpest frame" auto-suggest).
 3. **Local cutout + styling** — background removal runs on a tiny on-device model (`rembg`/u2netp, no cloud AI, no API keys), then: white sticker border, auto-enhance, straighten, face-aware centering, background fill (including one-click "match reference background"), and meme-style captions.
+   - **🎯 Match reference composition** — reads the reference's own tilt, scale, and position off its cutout mask and poses you the same way, so the two actually look like the same sticker. It pre-sets the sliders rather than forcing a transform, so you can nudge anything that looks off.
+   - **✨ Sticker-ness slider** — smooths, warms, and flattens your photo toward illustration so it reads as a sticker instead of a snapshot. The color target is sampled from your reference, so its palette pulls your sticker toward matching it. 0 = untouched.
 4. **Download** — 512×512 WebP (under 100 KB, sticker-app ready) and transparent PNG.
 
 **Getting stickers into chats:** Telegram — send the WebP to the official
